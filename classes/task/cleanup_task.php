@@ -86,6 +86,9 @@ class cleanup_task extends \core\task\scheduled_task {
 
                 // D. Desmatricular al usuario
                 $this->unenrol_user($userid, $courseid);
+
+                // E. Borrar Certificados (NUEVO)
+                $this->delete_certificates($userid, $courseid);
             }
         }
         
@@ -97,18 +100,25 @@ class cleanup_task extends \core\task\scheduled_task {
      */
     private function delete_quiz_attempts($userid, $courseid) {
         global $DB;
-        $sql = "SELECT qa.id, qa.quiz 
-                FROM {quiz_attempts} qa
-                JOIN {quiz} q ON q.id = qa.quiz
-                WHERE q.course = :courseid AND qa.userid = :userid";
         
-        $attempts = $DB->get_records_sql($sql, ['courseid' => $courseid, 'userid' => $userid]);
-        if ($attempts) {
-            foreach ($attempts as $attempt) {
-                // Función nativa de Moodle para borrar intentos limpiamente
-                quiz_delete_attempt($attempt, $attempt->quiz); 
+        // Primero, obtenemos todos los cuestionarios de este curso
+        $quizzes = $DB->get_records('quiz', ['course' => $courseid]);
+        
+        if (empty($quizzes)) {
+            return; // Si no hay cuestionarios, no hacemos nada
+        }
+
+        foreach ($quizzes as $quiz) {
+            // Buscamos los intentos de este usuario para cada cuestionario
+            $attempts = $DB->get_records('quiz_attempts', ['quiz' => $quiz->id, 'userid' => $userid]);
+            
+            if ($attempts) {
+                foreach ($attempts as $attempt) {
+                    // Ahora sí le pasamos el objeto $quiz completo
+                    quiz_delete_attempt($attempt, $quiz); 
+                }
+                mtrace("       - Intentos del cuestionario '{$quiz->name}' eliminados.");
             }
-            mtrace("       - Intentos de cuestionario eliminados.");
         }
     }
 
@@ -129,6 +139,33 @@ class cleanup_task extends \core\task\scheduled_task {
                     $plugin->unenrol_user($instance, $userid);
                     mtrace("       - Usuario desmatriculado (Método: {$instance->enrol}).");
                 }
+            }
+        }
+    }
+
+    /**
+     * Función de ayuda: Borra los certificados emitidos al usuario en el curso
+     * (Asume el uso del plugin mod_customcert)
+     */
+    private function delete_certificates($userid, $courseid) {
+        global $DB;
+        
+        // Primero verificamos si el plugin de certificados está instalado
+        if ($DB->get_manager()->table_exists('customcert_issues')) {
+            
+            // Buscamos los certificados emitidos a este usuario en este curso
+            $sql = "SELECT ci.id 
+                    FROM {customcert_issues} ci
+                    JOIN {customcert} c ON c.id = ci.customcertid
+                    WHERE c.course = :courseid AND ci.userid = :userid";
+            
+            $issues = $DB->get_records_sql($sql, ['courseid' => $courseid, 'userid' => $userid]);
+            
+            if ($issues) {
+                foreach ($issues as $issue) {
+                    $DB->delete_records('customcert_issues', ['id' => $issue->id]);
+                }
+                mtrace("       - Certificados (Custom Certificate) eliminados.");
             }
         }
     }
